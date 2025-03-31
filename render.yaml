@@ -1,0 +1,14 @@
+services:
+  - type: cron
+    name: rsi-streak-check
+    schedule: "0 */4 * * *"  # alle 4 Stunden
+    runtime: python
+    buildCommand: ""
+    startCommand: "python main.py"
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: CMC_API_KEY
+        sync: false
