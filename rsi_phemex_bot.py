@@ -38,7 +38,7 @@ def send_telegram_message(msg):
 
 # === Daten holen ===
 def get_ohlc_phemex(symbol):
-    ph_symbol = symbol + ".perp"
+    ph_symbol = "s" + symbol
     params = {
         "symbol": ph_symbol,
         "resolution": "4h",
