@@ -1,11 +1,16 @@
 import os
 import time
+import hmac
+import hashlib
 import requests
 import pandas as pd
 import numpy as np
+from urllib.parse import urlencode
 from collections import deque
 
 # === ENV VARS ===
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
@@ -14,12 +19,7 @@ CMC_API_KEY = os.getenv("CMC_API_KEY")
 def get_top_50_cmc_symbols():
     url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-    params = {
-        "start": "1",
-        "limit": "50",
-        "convert": "USDT",
-        "sort": "volume_24h"
-    }
+    params = {"start": "1", "limit": "50", "convert": "USDT", "sort": "volume_24h"}
     try:
         res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
@@ -41,21 +41,27 @@ def compute_rsi(prices, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# === Binance OHLC abrufen ===
-def get_4h_rsi(symbol):
+# === Binance OHLC mit API Key ===
+def get_binance_klines(symbol, interval="4h", limit=100):
     url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": "4h", "limit": 100}
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
     try:
-        res = requests.get(url, params=params)
+        res = requests.get(url, headers=headers, params=params)
         res.raise_for_status()
         data = res.json()
-        closes = [float(c[4]) for c in data]
-        df = pd.DataFrame({"close": closes})
-        df["rsi"] = compute_rsi(df["close"])
-        return df["rsi"].dropna().iloc[-1]
+        return [float(c[4]) for c in data]  # Close prices
     except Exception as e:
-        print(f"❌ {symbol} Fehler bei RSI: {e}")
+        print(f"❌ {symbol} Fehler bei Binance-API: {e}")
+        return []
+
+def get_4h_rsi(symbol):
+    closes = get_binance_klines(symbol)
+    if not closes or len(closes) < 20:
         return None
+    df = pd.DataFrame({"close": closes})
+    df["rsi"] = compute_rsi(df["close"])
+    return df["rsi"].dropna().iloc[-1]
 
 # === Telegram Push ===
 def send_telegram_message(message):
@@ -134,7 +140,7 @@ def check_rsi_streak(symbol):
 
 # === MAIN LOOP ===
 def run():
-    print("\n🔍 RSI-Streak-Check für CMC-Top-Coins via Binance...\n")
+    print("\n🔍 RSI-Streak-Check für CMC-Top-Coins via Binance API Key...\n")
     symbols = get_top_50_cmc_symbols()
     print(f"📈 {len(symbols)} Symbole geladen: {symbols[:5]}...")
     for symbol in symbols:
