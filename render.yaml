@@ -5,4 +5,4 @@ services:
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python rsi_phemex_bot.py"
+    startCommand: "python phemex_rsi_auth.py"
