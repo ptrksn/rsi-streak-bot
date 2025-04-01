@@ -1,99 +1,81 @@
-import os
-import time
+# === Phemex RSI-Streak-Bot ===
+
 import requests
-import pandas as pd
-import numpy as np
+import time
 from datetime import datetime
+import numpy as np
 
-# === TELEGRAM KONFIGURATION ===
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# === RSI-Berechnung ===
+def calculate_rsi(prices, period=14):
+    deltas = np.diff(prices)
+    seed = deltas[:period]
+    up = seed[seed > 0].sum() / period
+    down = -seed[seed < 0].sum() / period
+    rs = up / down if down != 0 else 0
+    rsi = [100. - 100. / (1. + rs)]
 
-# === SYMBOLLISTE VON PHEMEX (gültige Perpetuals) ===
-SYMBOLS = [
-    "BTCUSD", "ETHUSD", "XRPUSD", "LINKUSD", "ADAUSD",
-    "DOTUSD", "UNIUSD", "LTCUSD", "BCHUSD", "AVAXUSD"
-]
-
-# === Phemex API Endpoint ===
-PH_ENDPOINT = "https://api.phemex.com/md/kline"
-
-# === RSI BERECHNUNG ===
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
+    for delta in deltas[period:]:
+        up_val = max(delta, 0)
+        down_val = -min(delta, 0)
+        up = (up * (period - 1) + up_val) / period
+        down = (down * (period - 1) + down_val) / period
+        rs = up / down if down != 0 else 0
+        rsi.append(100. - 100. / (1. + rs))
     return rsi
-
-# === TELEGRAM SENDEN ===
-def send_telegram_message(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
-    try:
-        requests.post(url, data=data)
-    except Exception as e:
-        print(f"Telegram-Fehler: {e}")
 
 # === OHLC ABRUFEN ===
 def get_ohlc_phemex(symbol):
+    url = f"https://api.phemex.com/md/kline"
     params = {
         "symbol": symbol,
-        "resolution": "14400",  # 4h in Sekunden
+        "resolution": "14400",  # 4h
         "limit": 100
     }
     try:
-        res = requests.get(PH_ENDPOINT, params=params)
-        res.raise_for_status()
-        data = res.json().get("data")
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data, columns=["ts","o","h","l","c","v"])
-        df["timestamp"] = pd.to_datetime(df["ts"], unit="ms")
-        df["close"] = df["c"].astype(float)
-        return df[["timestamp", "close"]]
+        r = requests.get(url, params=params)
+        r.raise_for_status()
+        data = r.json()
+        if "data" not in data or not data["data"]:
+            raise ValueError("Keine Daten erhalten")
+        closes = [float(item[4]) for item in data["data"]]  # Schlusskurse
+        return closes
     except Exception as e:
         print(f"❌ {symbol} Fehler bei OHLC: {e}")
-        return pd.DataFrame()
+        return []
 
-# === RSI ANALYSE ===
+# === SYMBOLLISTE LADEN ===
+def get_phemex_perpetual_symbols():
+    url = "https://api.phemex.com/exchange/public/products"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        symbols = [item['symbol'] for item in data['data'] if item.get('type') == 'Perpetual']
+        return symbols
+    except Exception as e:
+        print(f"❌ Fehler beim Laden der Symbole: {e}")
+        return []
+
+# === RSI-Streak Check ===
 def check_rsi_streak(symbol):
-    df = get_ohlc_phemex(symbol)
-    if df.empty or len(df) < 20:
+    closes = get_ohlc_phemex(symbol)
+    if len(closes) < 20:
         print(f"⚠️ {symbol}: Nicht genug Daten.")
         return
 
-    df["rsi"] = compute_rsi(df["close"])
-    recent = df.dropna().tail(4)
-
-    if recent.empty:
-        print(f"⚠️ {symbol}: Keine RSI-Daten.")
-        return
-
-    rsi_vals = recent["rsi"].tolist()
-    streak_under = sum(r < 30 for r in rsi_vals)
-    streak_over = sum(r > 70 for r in rsi_vals)
-    latest_ts = recent["timestamp"].iloc[-1]
-    latest_rsi = rsi_vals[-1]
-
-    print(f"📊 {symbol} RSI-Werte: {[round(r, 2) for r in rsi_vals]}")
-
-    if streak_under == 4:
-        send_telegram_message(f"🔻 {symbol}: RSI < 30 seit 4x 4h\n📅 {latest_ts}\n📈 Long Setup möglich")
-    elif streak_over == 4:
-        send_telegram_message(f"🔺 {symbol}: RSI > 70 seit 4x 4h\n📅 {latest_ts}\n📉 Short Setup denkbar")
+    rsi_values = calculate_rsi(closes)[-4:]
+    print(f"📊 {symbol} letzte RSI-Werte: {rsi_values}")
+    
+    if all(rsi < 30 for rsi in rsi_values):
+        print(f"🚀 {symbol}: Möglicher LONG-Setup (4x RSI < 30)")
+    elif all(rsi > 70 for rsi in rsi_values):
+        print(f"🔻 {symbol}: Möglicher SHORT-Setup (4x RSI > 70)")
     else:
-        print(f"✅ {symbol}: Kein RSI-Streak-Signal.")
+        print(f"✅ {symbol}: Kein RSI-Signal.")
 
 # === MAIN ===
-def main():
-    print("\n🔍 RSI-Streak-Check für Phemex-Perpetuals:\n")
-    for sym in SYMBOLS:
-        check_rsi_streak(sym)
-        time.sleep(1.1)
-
-if __name__ == "__main__":
-    main()
+print("🔍 RSI-Streak-Check für Phemex Perpetuals...")
+symbols = get_phemex_perpetual_symbols()
+for symbol in symbols:
+    check_rsi_streak(symbol)
+    time.sleep(1.5)  # Phemex API nicht überlasten
