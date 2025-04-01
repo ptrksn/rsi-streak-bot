@@ -6,3 +6,11 @@ services:
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python phemex_rsi_auth.py"
+
+- type: cron
+  name: phemex-watchdog
+  schedule: "@every 10m"
+  env: python
+  plan: free
+  buildCommand: "pip install -r requirements.txt"
+  startCommand: "python phemex_watchdog.py"
