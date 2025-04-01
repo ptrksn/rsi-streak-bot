@@ -5,18 +5,20 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-# === PHEMEX RSI-BOT ===
-PH_ENDPOINT = "https://api.phemex.com/md/kline"
+# === TELEGRAM KONFIGURATION ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === Coin-Auswahl ===
+# === SYMBOLLISTE VON PHEMEX (gültige Perpetuals) ===
 SYMBOLS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT",
-    "AVAXUSDT", "LINKUSDT", "UNIUSDT", "AAVEUSDT"
+    "BTCUSD", "ETHUSD", "XRPUSD", "LINKUSD", "ADAUSD",
+    "DOTUSD", "UNIUSD", "LTCUSD", "BCHUSD", "AVAXUSD"
 ]
 
-# === RSI ===
+# === Phemex API Endpoint ===
+PH_ENDPOINT = "https://api.phemex.com/md/kline"
+
+# === RSI BERECHNUNG ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -27,31 +29,29 @@ def compute_rsi(series, period=14):
     rsi = 100 - (100 / (1 + rs))
     return rsi
 
-# === Telegram ===
+# === TELEGRAM SENDEN ===
 def send_telegram_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
         requests.post(url, data=data)
-    except:
-        pass
+    except Exception as e:
+        print(f"Telegram-Fehler: {e}")
 
-# === Daten holen ===
+# === OHLC ABRUFEN ===
 def get_ohlc_phemex(symbol):
-    ph_symbol = "s" + symbol
     params = {
-        "symbol": ph_symbol,
-        "resolution": "4h",
+        "symbol": symbol,
+        "resolution": "14400",  # 4h in Sekunden
         "limit": 100
     }
     try:
         res = requests.get(PH_ENDPOINT, params=params)
         res.raise_for_status()
-        data = res.json()
-        rows = data.get("data")
-        if not rows:
+        data = res.json().get("data")
+        if not data:
             return pd.DataFrame()
-        df = pd.DataFrame(rows, columns=["ts","o","h","l","c","v"])
+        df = pd.DataFrame(data, columns=["ts","o","h","l","c","v"])
         df["timestamp"] = pd.to_datetime(df["ts"], unit="ms")
         df["close"] = df["c"].astype(float)
         return df[["timestamp", "close"]]
@@ -59,7 +59,7 @@ def get_ohlc_phemex(symbol):
         print(f"❌ {symbol} Fehler bei OHLC: {e}")
         return pd.DataFrame()
 
-# === Analyse ===
+# === RSI ANALYSE ===
 def check_rsi_streak(symbol):
     df = get_ohlc_phemex(symbol)
     if df.empty or len(df) < 20:
@@ -67,33 +67,33 @@ def check_rsi_streak(symbol):
         return
 
     df["rsi"] = compute_rsi(df["close"])
-    recent_rsi = df[["timestamp", "rsi"]].dropna().tail(4)
+    recent = df.dropna().tail(4)
 
-    if recent_rsi.empty:
-        print(f"⚠️ {symbol}: RSI-Daten fehlen.")
+    if recent.empty:
+        print(f"⚠️ {symbol}: Keine RSI-Daten.")
         return
 
-    rsi_values = recent_rsi["rsi"].tolist()
-    streak_under = sum(r < 30 for r in rsi_values)
-    streak_over = sum(r > 70 for r in rsi_values)
-    latest_time = recent_rsi["timestamp"].iloc[-1]
-    latest_rsi = rsi_values[-1]
+    rsi_vals = recent["rsi"].tolist()
+    streak_under = sum(r < 30 for r in rsi_vals)
+    streak_over = sum(r > 70 for r in rsi_vals)
+    latest_ts = recent["timestamp"].iloc[-1]
+    latest_rsi = rsi_vals[-1]
 
-    print(f"📊 {symbol} letzte 4h RSI: {[round(r,2) for r in rsi_values]}")
+    print(f"📊 {symbol} RSI-Werte: {[round(r, 2) for r in rsi_vals]}")
 
     if streak_under == 4:
-        send_telegram_message(f"🔻 {symbol}: RSI < 30 seit 4x 4h (zuletzt {latest_rsi:.2f})\n📅 {latest_time}\n➡️ Long Setup möglich")
+        send_telegram_message(f"🔻 {symbol}: RSI < 30 seit 4x 4h\n📅 {latest_ts}\n📈 Long Setup möglich")
     elif streak_over == 4:
-        send_telegram_message(f"🔺 {symbol}: RSI > 70 seit 4x 4h (zuletzt {latest_rsi:.2f})\n📅 {latest_time}\n➡️ Short Setup denkbar")
+        send_telegram_message(f"🔺 {symbol}: RSI > 70 seit 4x 4h\n📅 {latest_ts}\n📉 Short Setup denkbar")
     else:
         print(f"✅ {symbol}: Kein RSI-Streak-Signal.")
 
 # === MAIN ===
 def main():
-    print("\n🔍 RSI-Streak-Analyse (Phemex 4h):\n")
-    for symbol in SYMBOLS:
-        check_rsi_streak(symbol)
-        time.sleep(1.2)  # Rate Limit Schutz
+    print("\n🔍 RSI-Streak-Check für Phemex-Perpetuals:\n")
+    for sym in SYMBOLS:
+        check_rsi_streak(sym)
+        time.sleep(1.1)
 
 if __name__ == "__main__":
     main()
