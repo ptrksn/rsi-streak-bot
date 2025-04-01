@@ -1,60 +1,68 @@
 import os
-import time
-import hmac
-import hashlib
 import requests
+import time
 
-API_KEY = os.getenv("PHEMEX_API_KEY")
-API_SECRET = os.getenv("PHEMEX_API_SECRET")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_URL = "https://vapi.phemex.com"
+# === Debug-Ausgabe zur Laufzeit ===
+print("✅ Watchdog-Skript gestartet...")
 
+# === Einstellungen ===
+PHEMEX_BASE_URL = "https://api.phemex.com"
+TOP_SYMBOLS = ["BTCUSD", "ETHUSD", "XRPUSD", "LINKUSD", "LTCUSD"]  # Nur Beispiele
+VOLUME_SPIKE_THRESHOLD = 2.0  # Faktor (z. B. 2.0 = doppelt so viel Volumen wie Schnitt)
 
-def send_telegram_message(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+# === Funktion: Volumen holen ===
+def get_24h_volume(symbol):
     try:
-        requests.post(url, data=data)
+        url = f"{PHEMEX_BASE_URL}/md/ticker/24hr?symbol={symbol}"
+        response = requests.get(url)
+        data = response.json()
+        vol = float(data["result"]["turnoverEv"]) / 1e8
+        return vol
     except Exception as e:
-        print("❌ Fehler beim Senden der Telegram-Nachricht:", e)
+        print(f"⚠️ Fehler beim Abruf von Volumen für {symbol}: {e}")
+        return None
 
+# === Funktion: Telegram senden ===
+def send_telegram_alert(symbol, vol):
+    message = f"📈 Volumen-Anstieg bei {symbol}! Aktuelles Volumen: {vol:.2f}"
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        print("⚠️ Telegram-Konfiguration fehlt.")
+        return
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    requests.post(url, data={"chat_id": chat_id, "text": message})
 
-def test_api():
-    endpoint = "/accounts/account"
-    timestamp = str(int(time.time() * 1000))
-    message = endpoint + timestamp
-    signature = hmac.new(
-        bytes(API_SECRET, "utf-8"),
-        bytes(message, "utf-8"),
-        digestmod=hashlib.sha256
-    ).hexdigest()
+# === Hauptlogik: Vergleiche Volumen mit früherem Durchschnitt ===
+def main():
+    print("🔍 Starte Volumen-Überwachung für Top-Symbole...")
+    volumes = {}
 
-    headers = {
-        "x-phemex-access-token": API_KEY,
-        "x-phemex-request-expiry": timestamp,
-        "x-phemex-request-signature": signature
-    }
+    # Initiales Volumen speichern
+    for symbol in TOP_SYMBOLS:
+        vol = get_24h_volume(symbol)
+        if vol:
+            volumes[symbol] = vol
+            print(f"💾 {symbol} - Initialvolumen: {vol:.2f}")
+        time.sleep(1)
 
-    url = BASE_URL + endpoint
-    try:
-        response = requests.get(url, headers=headers)
-        if response.status_code == 403:
-            print("⏳ API noch nicht freigeschaltet. Warte weiter...")
-            return False
-        else:
-            print("✅ API funktioniert:", response.status_code)
-            send_telegram_message("✅ Phemex API jetzt aktiv! Zugriff auf vapi.phemex.com funktioniert.")
-            return True
-    except Exception as e:
-        print("❌ Fehler bei API-Test:", e)
-        return False
+    # Kurze Wartezeit zur Simulation von Intervall
+    print("⏳ Warte 60 Sekunden, um erneutes Volumen zu messen...")
+    time.sleep(60)
 
+    # Neues Volumen vergleichen
+    for symbol in TOP_SYMBOLS:
+        new_vol = get_24h_volume(symbol)
+        if new_vol and symbol in volumes:
+            factor = new_vol / volumes[symbol] if volumes[symbol] > 0 else 0
+            print(f"📊 {symbol}: Vorher: {volumes[symbol]:.2f}, Jetzt: {new_vol:.2f}, Faktor: {factor:.2f}")
+            if factor >= VOLUME_SPIKE_THRESHOLD:
+                print(f"🚨 Volumen-Spike erkannt bei {symbol}!")
+                # send_telegram_alert(symbol, new_vol)
+        time.sleep(1)
 
+    print("✅ Watchdog abgeschlossen.")
+
+# === Starten ===
 if __name__ == "__main__":
-    print("🔁 Starte Phemex-API-Watchdog...")
-    while True:
-        success = test_api()
-        if success:
-            break
-        time.sleep(600)  # 10 Minuten warten
+    main()
