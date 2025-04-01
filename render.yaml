@@ -1,18 +1,8 @@
 services:
   - type: cron
     name: rsi-streak-phemex
-    schedule: "0 */4 * * *"  # alle 4 Stunden
+    schedule: "0 */4 * * *"
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "python phemex_rsi_auth.py"
-
-- type: cron
-  name: phemex-watchdog
-  schedule: "@every 10m"
-  env: python
-  plan: free
-  buildCommand: "pip install -r requirements.txt"
-  startCommand: "python phemex_watchdog.py"
-
-<!-- Trigger redeploy -->
+    startCommand: "python start.py rsi"
