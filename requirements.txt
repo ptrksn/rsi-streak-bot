@@ -1,3 +1,4 @@
 requests
 tradingview_ta
 python-dotenv
+python-telegram-bot
