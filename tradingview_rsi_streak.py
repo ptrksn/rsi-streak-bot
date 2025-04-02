@@ -37,7 +37,7 @@ def get_top_cmc_symbols(limit=50):
 def get_rsi_values(symbol):
     handler = TA_Handler(
         symbol=symbol,
-        exchange=Exchange.BINANCE,
+        exchange="BINANCE",
         screener="crypto",
         interval=Interval.INTERVAL_4_HOURS,
     )
