@@ -42,15 +42,23 @@ def get_rsi_values(symbol):
         symbol=symbol,
         screener="crypto",
         exchange="BINANCE",
-        interval=TRADINGVIEW_INTERVAL
+        interval=Interval.INTERVAL_4_HOURS,
     )
+
     try:
         analysis = handler.get_analysis()
-        rsi_series = analysis.indicators['RSI']
-        return analysis.indicators['RSI'], rsi_series
+        rsi_series = analysis.indicators.get("RSI", None)
+
+        # Sicherstellen, dass rsi_series eine Liste ist
+        if isinstance(rsi_series, list):
+            return rsi_series
+        elif isinstance(rsi_series, (int, float)):
+            return [rsi_series]  # ein einzelner Wert → in Liste packen
+        else:
+            return []
     except Exception as e:
         print(f"❌ Fehler bei {symbol}: {e}")
-        return None, []
+        return []
 
 
 def check_rsi_streak(rsi_values):
