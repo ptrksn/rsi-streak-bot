@@ -1,85 +1,57 @@
 import os
 import time
-import requests
 import hmac
 import hashlib
-import json
-from datetime import datetime
-import numpy as np
+import requests
 
-# === Phemex Authentifizierung ===
-API_KEY = os.environ.get("PHEMEX_API_KEY")
-API_SECRET = os.environ.get("PHEMEX_API_SECRET")
-BASE_URL = "https://vapi.phemex.com"  # Authentifizierter Zugang
+API_KEY = os.getenv("PHEMEX_API_KEY")
+API_SECRET = os.getenv("PHEMEX_API_SECRET")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BASE_URL = "https://vapi.phemex.com"
 
-# === OHLC ABRUFEN ===
-def get_ohlc_phemex(symbol):
+def send_telegram_message(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
-        timestamp = int(time.time() * 1000)
-        path = "/md/kline"
-        query = f"symbol={symbol}&resolution=14400&limit=100"
-        message = f"{path}{timestamp}{query}"
-        signature = hmac.new(
-            API_SECRET.encode("utf-8"),
-            message.encode("utf-8"),
-            hashlib.sha256
-        ).hexdigest()
-
-        headers = {
-            "x-phemex-access-token": API_KEY,
-            "x-phemex-request-expiry": str(timestamp),
-            "x-phemex-request-signature": signature
-        }
-
-        url = f"{BASE_URL}{path}?{query}"
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-        if "data" in data and "candles" in data["data"]:
-            klines = data["data"]["candles"]
-            closes = [float(k[4]) for k in klines]
-            timestamps = [datetime.fromtimestamp(k[0] / 1000.0) for k in klines]
-            return timestamps, closes
-        else:
-            print(f"⚠️ {symbol}: Keine gültigen Kline-Daten.")
-            return [], []
+        requests.post(url, data=data)
     except Exception as e:
-        print(f"❌ {symbol} Fehler bei OHLC: {e}")
-        return [], []
+        print("❌ Fehler beim Senden der Telegram-Nachricht:", e)
 
-# === RSI-BERECHNUNG ===
-def calculate_rsi(prices, period=14):
-    if len(prices) < period:
-        return []
+def test_api():
+    endpoint = "/accounts/account"
+    timestamp = str(int(time.time() * 1000))
+    message = endpoint + timestamp
+    signature = hmac.new(
+        bytes(API_SECRET, "utf-8"),
+        bytes(message, "utf-8"),
+        digestmod=hashlib.sha256
+    ).hexdigest()
 
-    deltas = np.diff(prices)
-    seed = deltas[:period]
-    up = seed[seed > 0].sum() / period
-    down = -seed[seed < 0].sum() / period
-    rs = up / down if down != 0 else 0
-    rsi = [100. - 100. / (1. + rs)]
+    headers = {
+        "x-phemex-access-token": API_KEY,
+        "x-phemex-request-expiry": timestamp,
+        "x-phemex-request-signature": signature
+    }
 
-    for delta in deltas[period:]:
-        upval = max(delta, 0)
-        downval = -min(delta, 0)
-        up = (up * (period - 1) + upval) / period
-        down = (down * (period - 1) + downval) / period
-        rs = up / down if down != 0 else 0
-        rsi.append(100. - 100. / (1. + rs))
-
-    return rsi
-
-# === HAUPTAUSFÜHRUNG ===
-if __name__ == "__main__":
-    symbol = "BTCUSD"  # ⚠️ Kein "BTCUSDT" bei Phemex!
-    print(f"🔍 Abruf von {symbol} über Phemex...")
-    timestamps, closes = get_ohlc_phemex(symbol)
-    if closes:
-        rsi = calculate_rsi(closes)
-        if rsi:
-            print(f"📈 Aktueller RSI für {symbol}: {rsi[-1]:.2f}")
+    url = BASE_URL + endpoint
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 403:
+            print("⏳ API noch nicht freigeschaltet. Warte weiter...")
+            return False
         else:
-            print("⚠️ Nicht genug RSI-Daten.")
-    else:
-        print(f"⚠️ Keine Schlusskurse für {symbol} erhalten.")
+            print("✅ API funktioniert:", response.status_code)
+            send_telegram_message("✅ Phemex API jetzt aktiv! Zugriff auf vapi.phemex.com funktioniert.")
+            return True
+    except Exception as e:
+        print("❌ Fehler bei API-Test:", e)
+        return False
+
+if __name__ == "__main__":
+    print("🔁 Starte Phemex-API-Watchdog...")
+    while True:
+        success = test_api()
+        if success:
+            break
+        time.sleep(600)
