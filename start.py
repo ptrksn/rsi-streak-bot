@@ -9,7 +9,7 @@ if len(sys.argv) > 1:
 
     if task == "rsi":
         print("▶️ Starte RSI-Skript...")
-        result = subprocess.run(["python3", "phemex_rsi_auth.py"], capture_output=True, text=True)
+        result = subprocess.run(["python3", "tradingview_rsi_streak.py"], capture_output=True, text=True)
         print(result.stdout)
         print(result.stderr)
     elif task == "watchdog":
