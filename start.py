@@ -1,5 +1,3 @@
-import os
-print(f"📁 Dateien im Ordner: {os.listdir()}")
 import sys
 import subprocess
 
@@ -11,10 +9,14 @@ if len(sys.argv) > 1:
 
     if task == "rsi":
         print("▶️ Starte RSI-Skript...")
-        subprocess.run(["python", "phemex_rsi_auth.py"])
+        result = subprocess.run(["python", "phemex_rsi_auth.py"], capture_output=True, text=True)
+        print(result.stdout)
+        print(result.stderr)
     elif task == "watchdog":
         print("▶️ Starte Watchdog-Skript...")
-        subprocess.run(["python", "phemex_watchdog.py"])
+        result = subprocess.run(["python", "phemex_watchdog.py"], capture_output=True, text=True)
+        print(result.stdout)
+        print(result.stderr)
     else:
         print(f"❌ Unbekannte Aufgabe: {task}")
 else:
