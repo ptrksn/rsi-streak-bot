@@ -1,104 +1,138 @@
 import os
 import time
-import requests
+import numpy as np
 from datetime import datetime
 from tradingview_ta import TA_Handler, Interval
+import requests
 
-CMC_API_KEY = os.getenv("CMC_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 
-TV_INTERVAL = Interval.INTERVAL_4_HOURS
-RSI_PERIOD = 14
-CMC_LIMIT = 50
+HEADERS = {
+    "X-CMC_PRO_API_KEY": CMC_API_KEY
+}
 
-# Hole Top-Coins von CoinMarketCap
-def get_top_symbols():
-    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-    params = {"limit": CMC_LIMIT, "sort": "volume_24h"}
-    try:
-        response = requests.get(url, headers=headers, params=params)
-        data = response.json()
-        symbols = [item["symbol"] + "USDT" for item in data["data"]]
-        return symbols
-    except Exception as e:
-        print(f"❌ Fehler beim Abrufen der Top-Coins: {e}")
-        return []
+TRADINGVIEW_INTERVAL = Interval.INTERVAL_4_HOURS
+MIN_REQUIRED_VALUES = 4
 
-# Prüfe ob Symbol über TradingView analysierbar ist
-def is_valid_symbol(symbol):
-    try:
-        handler = TA_Handler(
-            symbol=symbol,
-            screener="crypto",
-            exchange="PHEMEX",
-            interval=TV_INTERVAL
-        )
-        _ = handler.get_analysis()
-        return True
-    except:
-        return False
 
-# RSI-Werte abrufen
-def get_rsi_values(symbol):
-    try:
-        handler = TA_Handler(
-            symbol=symbol,
-            screener="crypto",
-            exchange="PHEMEX",
-            interval=TV_INTERVAL
-        )
-        rsi_series = handler.get_analysis().indicators
-        return rsi_series["RSI"] if "RSI" in rsi_series else None
-    except Exception as e:
-        print(f"❌ Fehler bei {symbol}: {e}")
-        return None
-
-# Telegram senden
 def send_telegram(msg):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("⚠️ Telegram-Konfiguration fehlt.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+
+
+def get_cmc_top_symbols(limit=50):
+    url = f"https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest?limit={limit}&convert=USDT"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg})
+        response = requests.get(url, headers=HEADERS)
+        data = response.json()
+        symbols = [entry['symbol'] + 'USDT' for entry in data['data']]
+        return symbols
     except Exception as e:
-        print("❌ Fehler beim Telegram-Versand:", e)
+        print(f"❌ Fehler beim Abruf der CMC-Symbole: {e}")
+        return []
 
-# Hauptlogik
+
+def get_rsi_values(symbol):
+    handler = TA_Handler(
+        symbol=symbol,
+        screener="crypto",
+        exchange="BINANCE",
+        interval=TRADINGVIEW_INTERVAL
+    )
+    try:
+        analysis = handler.get_analysis()
+        rsi_series = analysis.indicators['RSI']
+        return analysis.indicators['RSI'], rsi_series
+    except Exception as e:
+        print(f"❌ Fehler bei {symbol}: {e}")
+        return None, []
+
+
+def check_rsi_streak(rsi_values):
+    streak = 0
+    last_4 = rsi_values[-4:] if len(rsi_values) >= 4 else []
+    for rsi in reversed(last_4):
+        if rsi < 30:
+            streak += 1
+        else:
+            break
+    if streak >= 4:
+        return "LONG"
+    elif sum(1 for rsi in last_4 if rsi < 30) >= 3:
+        return "LONG_SETUP"
+
+    streak = 0
+    for rsi in reversed(last_4):
+        if rsi > 70:
+            streak += 1
+        else:
+            break
+    if streak >= 4:
+        return "SHORT"
+    elif sum(1 for rsi in last_4 if rsi > 70) >= 3:
+        return "SHORT_SETUP"
+
+    return None
+
+
 def main():
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    message_lines = [f"📊 RSI-Streak-Report ({now})\n"]
+    print("🔍 RSI-Streak-Check via TradingView...")
+    all_symbols = get_cmc_top_symbols(limit=50)
 
-    all_symbols = get_top_symbols()
-    valid_symbols = []
-    print(f"📈 Prüfe {len(all_symbols)} CMC-Symbole auf Phemex-Verfügbarkeit...")
-    for symbol in all_symbols:
-        if is_valid_symbol(symbol):
-            valid_symbols.append(symbol)
-            time.sleep(1)
+    valid_symbols = [s for s in all_symbols if s.endswith("USDT") and not any(
+        x in s for x in [".z", "v", "USDC", "TUSD", "FDUSD", "USDTUSDT"])]
+    print(f"📈 Analysiere {len(valid_symbols)} Symbole: {valid_symbols[:5]}...")
 
-    print(f"✅ {len(valid_symbols)} gültige Symbole: {valid_symbols}")
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    long_streaks = []
+    short_streaks = []
+    long_setups = []
+    short_setups = []
+    errors = []
 
-    streaks = []
     for symbol in valid_symbols:
-        rsi = get_rsi_values(symbol)
-        if rsi is None:
-            streaks.append(f"❌ {symbol}: Fehler bei RSI")
+        print(f"📊 {symbol}...")
+        rsi, rsi_values = get_rsi_values(symbol)
+        if rsi is None or not rsi_values:
+            errors.append(symbol)
             continue
 
-        status = "❌ Kein RSI-Streak"
-        if rsi < 30:
-            status = f"⚠️ {symbol}: RSI unter 30 – Long Setup denkbar"
-        elif rsi > 70:
-            status = f"⚠️ {symbol}: RSI über 70 – Short Setup denkbar"
-        streaks.append(status)
-        time.sleep(1)
+        status = check_rsi_streak(rsi_values)
+        if status == "LONG":
+            long_streaks.append(symbol)
+        elif status == "SHORT":
+            short_streaks.append(symbol)
+        elif status == "LONG_SETUP":
+            long_setups.append(symbol)
+        elif status == "SHORT_SETUP":
+            short_setups.append(symbol)
 
-    message_lines.append("\n".join(streaks))
-    send_telegram("\n".join(message_lines))
-    print("✅ RSI-Streak-Bericht gesendet.")
+    # Report generieren
+    report = f"📊 RSI-Streak-Report ({timestamp})\n\n"
+
+    if long_streaks or short_streaks or long_setups or short_setups:
+        if long_streaks:
+            report += "🚀 RSI-Streak (LONG):\n" + "\n".join([f"✅ {s}" for s in long_streaks]) + "\n\n"
+        if short_streaks:
+            report += "🔻 RSI-Streak (SHORT):\n" + "\n".join([f"✅ {s}" for s in short_streaks]) + "\n\n"
+        if long_setups:
+            report += "⚠️ Long Setup denkbar:\n" + "\n".join([f"⚠️ {s}" for s in long_setups]) + "\n\n"
+        if short_setups:
+            report += "⚠️ Short Setup denkbar:\n" + "\n".join([f"⚠️ {s}" for s in short_setups]) + "\n\n"
+    else:
+        report += "❌ Kein Coin mit aktuellem RSI-Streak oder Setup."
+
+    if errors:
+        report += "\n\n❌ Fehlerhafte Symbole:\n" + "\n".join(errors)
+
+    send_telegram(report)
+    print("✅ RSI-Analyse abgeschlossen.")
+
 
 if __name__ == "__main__":
     main()
