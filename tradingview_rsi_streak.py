@@ -1,121 +1,125 @@
 import os
-import requests
-import time
-import numpy as np
+import datetime
 from tradingview_ta import TA_Handler, Interval, Exchange
+from dotenv import load_dotenv
+import requests
 
-CMC_API_KEY = os.getenv("CMC_API_KEY")
+load_dotenv()
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 
-PHEMEX_SYMBOLS_URL = "https://api.phemex.com/exchange/public/products"
-CMC_URL = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+RSI_PERIODS = 4  # Anzahl der 4h-Kerzen
+LONG_THRESHOLD = 30
+SHORT_THRESHOLD = 70
 
-RSI_PERIOD = 14
-RSI_OVERBOUGHT = 70
-RSI_OVERSOLD = 30
-MAX_COINS = 50
-
-
-def send_telegram(message):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-        try:
-            requests.post(url, data=payload)
-        except Exception as e:
-            print(f"❌ Fehler bei Telegram: {e}")
+PH_SUPPORTED = [  # Gültige Phemex-Perpetuals
+    "BTCUSDT", "ETHUSDT", "XRPUSDT", "LINKUSDT", "LTCUSDT",
+    "ADAUSDT", "DOTUSDT", "UNIUSDT", "AAVEUSDT", "BCHUSDT"
+]
 
 
-def get_top_cmc_symbols():
+def get_top_cmc_symbols(limit=50):
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
+    params = {"sort": "volume_24h", "limit": limit}
     try:
-        response = requests.get(
-            CMC_URL,
-            headers={"X-CMC_PRO_API_KEY": CMC_API_KEY},
-            params={"limit": MAX_COINS, "sort": "volume_24h"},
-        )
-        data = response.json()
-        return [f"{entry['symbol']}USDT" for entry in data["data"]]
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()["data"]
+        symbols = [entry["symbol"] + "USDT" for entry in data]
+        return [s for s in symbols if s in PH_SUPPORTED]
     except Exception as e:
-        print(f"❌ Fehler beim Abrufen der CMC-Symbole: {e}")
+        print(f"❌ Fehler bei CMC: {e}")
         return []
 
 
-def get_phemex_symbols():
+def get_rsi_values(symbol):
+    handler = TA_Handler(
+        symbol=symbol,
+        exchange=Exchange.BINANCE,
+        screener="crypto",
+        interval=Interval.INTERVAL_4_HOURS,
+    )
     try:
-        response = requests.get(PHEMEX_SYMBOLS_URL)
-        data = response.json()
-        symbols = [item["symbol"] for item in data["data"] if item["type"] == "Perpetual"]
-        return symbols
-    except Exception as e:
-        print(f"❌ Fehler beim Abrufen der Phemex-Symbole: {e}")
-        return []
-
-
-def check_rsi_streak(symbol):
-    try:
-        handler = TA_Handler(
-            symbol=symbol,
-            exchange="BINANCE",
-            screener="crypto",
-            interval=Interval.INTERVAL_4_HOURS
-        )
         analysis = handler.get_analysis()
-        rsi_series = analysis.indicators.get("RSI")
-
-        if rsi_series is None:
-            return symbol, None, "Keine RSI-Daten"
-
-        rsi_value = analysis.indicators["RSI"]
-        streak = 0
-        if rsi_value < RSI_OVERSOLD:
-            for rsi in analysis.indicators.values():
-                if rsi < RSI_OVERSOLD:
-                    streak += 1
-                else:
-                    break
-            return symbol, rsi_value, f"🔽 RSI < {RSI_OVERSOLD} seit {streak} Kerzen"
-        elif rsi_value > RSI_OVERBOUGHT:
-            for rsi in analysis.indicators.values():
-                if rsi > RSI_OVERBOUGHT:
-                    streak += 1
-                else:
-                    break
-            return symbol, rsi_value, f"🔼 RSI > {RSI_OVERBOUGHT} seit {streak} Kerzen"
+        rsi_list = analysis.indicators.get("RSI", None)
+        if isinstance(rsi_list, list):
+            return rsi_list[-RSI_PERIODS:]
         else:
-            return symbol, rsi_value, None
-
+            return [rsi_list] * RSI_PERIODS
     except Exception as e:
-        return symbol, None, f"Fehler: {e}"
+        print(f"❌ Fehler bei {symbol}: {e}")
+        return None
+
+
+def detect_rsi_streak(rsi_values):
+    below_30 = [r < LONG_THRESHOLD for r in rsi_values]
+    above_70 = [r > SHORT_THRESHOLD for r in rsi_values]
+    
+    if all(below_30):
+        return ("LONG", RSI_PERIODS)
+    elif all(above_70):
+        return ("SHORT", RSI_PERIODS)
+    elif sum(below_30) in [2, 3] and below_30[-1]:
+        return ("LONG_POSSIBLE", sum(below_30))
+    elif sum(above_70) in [2, 3] and above_70[-1]:
+        return ("SHORT_POSSIBLE", sum(above_70))
+    else:
+        return None
+
+
+def send_telegram_report(full_message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram-Konfiguration fehlt.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    try:
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": full_message})
+    except Exception as e:
+        print(f"❌ Telegram-Fehler: {e}")
 
 
 def main():
-    print("🔍 RSI-Streak-Check via TradingView & CoinMarketCap...")
-    cmc_symbols = get_top_cmc_symbols()
-    phemex_symbols = get_phemex_symbols()
-
-    symbols = [s for s in cmc_symbols if s.replace(".P", "") in phemex_symbols]
+    print("🔍 RSI-Streak-Check via TradingView...")
+    symbols = get_top_cmc_symbols(50)
     print(f"📈 Analysiere {len(symbols)} Symbole: {symbols}...")
 
-    messages = []
+    results = []
+    possible_setups = []
 
-    for sym in symbols:
-        print(f"📊 {sym}...")
-        symbol, rsi, info = check_rsi_streak(sym)
-        if info:
-            print(f"{info}")
-            messages.append(f"{symbol} (RSI: {rsi:.2f}) - {info}")
+    for symbol in symbols:
+        print(f"📊 {symbol}...")
+        rsi_vals = get_rsi_values(symbol)
+        if not rsi_vals or len(rsi_vals) < RSI_PERIODS:
+            results.append(f"❌ {symbol}: Keine oder zu wenig RSI-Daten.")
+            continue
+
+        current_rsi = rsi_vals[-1]
+        streak_info = detect_rsi_streak(rsi_vals)
+
+        if streak_info:
+            kind, count = streak_info
+            if kind == "LONG":
+                results.append(f"✅ {symbol}: {count}x RSI < 30 → Long Setup aktiv!")
+            elif kind == "SHORT":
+                results.append(f"✅ {symbol}: {count}x RSI > 70 → Short Setup aktiv!")
+            elif kind == "LONG_POSSIBLE":
+                possible_setups.append(f"- {symbol}: {count}x RSI < 30 → Long Setup möglich")
+            elif kind == "SHORT_POSSIBLE":
+                possible_setups.append(f"- {symbol}: {count}x RSI > 70 → Short Setup denkbar")
         else:
-            print("ℹ️ Kein RSI-Streak.")
-        time.sleep(1)
+            results.append(f"❌ {symbol}: Kein RSI-Streak")
 
-    if messages:
-        report = "📊 RSI-Streak-Report (Phemex):\n" + "\n".join(messages)
-    else:
-        report = "❌ Kein Coin mit aktuellem RSI-Streak."
+    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    message = f"📊 RSI-Streak-Report ({now})\n"
 
-    print(report)
-    send_telegram(report)
+    if possible_setups:
+        message += "\n🚀 Mögliche Setups:\n" + "\n".join(possible_setups)
+    message += "\n\n📉 Aktuelle RSI-Streaks:\n" + "\n".join(results)
+
+    send_telegram_report(message)
+    print(message)
 
 
 if __name__ == "__main__":
