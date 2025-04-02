@@ -71,3 +71,4 @@ for symbol in COINS:
         print(f"❌ Fehler bei {symbol}: {e}")
 
 print("✅ RSI-Analyse abgeschlossen.")
+send_telegram("✅ Testnachricht vom RSI-Streak-Bot.")
