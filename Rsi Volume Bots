@@ -1,0 +1,84 @@
+# rsi_bot.py
+import os
+import time
+import requests
+import numpy as np
+from datetime import datetime
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+PHEMEX_BASE_URL = "https://api.phemex.com"
+TOP_SYMBOLS = ["BTCUSD", "ETHUSD", "XRPUSD", "LINKUSD", "LTCUSD"]
+
+
+def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram nicht konfiguriert.")
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print("❌ Fehler beim Senden an Telegram:", e)
+
+
+def fetch_ohlc(symbol, resolution=14400, limit=20):
+    try:
+        url = f"{PHEMEX_BASE_URL}/md/kline?symbol={symbol}&resolution={resolution}&limit={limit}"
+        response = requests.get(url)
+        data = response.json().get("data")
+        if not data:
+            return []
+        return [float(c[4]) for c in data]  # Close-Preise
+    except Exception as e:
+        print(f"❌ {symbol} Fehler bei OHLC: {e}")
+        return []
+
+
+def calculate_rsi(prices, length=14):
+    if len(prices) < length:
+        return []
+    deltas = np.diff(prices)
+    seed = deltas[:length]
+    up = seed[seed > 0].sum() / length
+    down = -seed[seed < 0].sum() / length
+    rs = up / down if down != 0 else 0
+    rsi = [100 - 100 / (1 + rs)]
+    for delta in deltas[length:]:
+        upval = max(delta, 0)
+        downval = -min(delta, 0)
+        up = (up * (length - 1) + upval) / length
+        down = (down * (length - 1) + downval) / length
+        rs = up / down if down != 0 else 0
+        rsi.append(100 - 100 / (1 + rs))
+    return rsi[-4:]  # Letzte 4 RSI-Werte
+
+
+def check_rsi_streak():
+    print("\U0001F50D RSI-Streak-Check für Phemex-Perpetuals:")
+    for symbol in TOP_SYMBOLS:
+        prices = fetch_ohlc(symbol)
+        if not prices:
+            print(f"⚠️ {symbol}: Nicht genug Daten.")
+            continue
+        rsi_values = calculate_rsi(prices)
+        if len(rsi_values) < 4:
+            print(f"⏳ {symbol}: Warte auf 4 RSI-Werte...")
+            continue
+        print(f"📊 {symbol} letzte 4 RSI: {rsi_values}")
+        if all(r < 30 for r in rsi_values):
+            msg = f"📉 {symbol}: RSI < 30 in den letzten 4x 4h-Kerzen – Long Setup denkbar."
+            print("⚠️", msg)
+            send_telegram_message(msg)
+        elif all(r > 70 for r in rsi_values):
+            msg = f"📈 {symbol}: RSI > 70 in den letzten 4x 4h-Kerzen – Short Setup denkbar."
+            print("⚠️", msg)
+            send_telegram_message(msg)
+        else:
+            print(f"✅ {symbol}: Kein neues Signal.")
+
+
+if __name__ == "__main__":
+    check_rsi_streak()
