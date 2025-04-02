@@ -1,99 +1,73 @@
 import os
-import time
-import json
 import requests
 from tradingview_ta import TA_Handler, Interval
+import time
 
-# === KONFIGURATION ===
-SYMBOLS = [
+# === Telegram ===
+def send_telegram_message(message):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id:
+        print("⚠️ Telegram-Konfiguration fehlt.")
+        return
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    requests.post(url, data={"chat_id": chat_id, "text": message})
+
+# === Konfiguration ===
+COINS = [
     "BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT", "DOGEUSDT",
     "ADAUSDT", "AVAXUSDT", "LINKUSDT", "UNIUSDT", "LTCUSDT"
 ]
-RSI_THRESHOLD_LOW = 30
-RSI_THRESHOLD_HIGH = 70
-CHECK_LENGTH = 4  # Anzahl der letzten RSI-Werte
 INTERVAL = Interval.INTERVAL_4_HOURS
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-STATE_FILE = "rsi_streak_state.json"
 
-# === Hilfsfunktionen ===
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+print("\U0001F50D RSI-Streak-Check via TradingView...")
+
+# === Funktion zur RSI-Streak-Prüfung ===
+def is_rsi_streak(rsi_values, oversold=True, streak_len=4):
+    threshold = 30 if oversold else 70
+    cmp = (lambda x: x < threshold) if oversold else (lambda x: x > threshold)
+    return all(cmp(val) for val in rsi_values[-streak_len:])
+
+# === Analyse ===
+for symbol in COINS:
+    print(f"\n📊 {symbol}...")
     try:
-        requests.post(url, data=data)
-    except Exception as e:
-        print(f"❌ Telegram-Fehler: {e}")
-
-
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
-
-
-# === Hauptlogik ===
-def analyze_rsi():
-    print("\U0001F50D RSI-Streak-Check via TradingView...")
-    state = load_state()
-
-    for symbol in SYMBOLS:
-        print(f"\n📊 {symbol}...")
         handler = TA_Handler(
             symbol=symbol,
             screener="crypto",
             exchange="BINANCE",
             interval=INTERVAL
         )
+        analysis = handler.get_analysis()
+        rsi_values = analysis.indicators.get("RSI", None)
 
-        try:
-            analysis = handler.get_analysis()
-            rsi_series = analysis.indicators.get("RSI")
+        if rsi_values is None:
+            print("⚠️ Kein RSI-Wert gefunden.")
+            continue
 
-            if not rsi_series:
-                print(f"⚠️ Keine RSI-Werte für {symbol}")
-                continue
+        print(f"Aktueller RSI: {rsi_values:.2f}")
 
-            current_rsi = analysis.indicators["RSI"]
-            print(f"Aktueller RSI: {current_rsi:.2f}")
+        # Streak-Prüfung
+        hist = handler.get_analysis().oscillators["COMPUTE"]
+        rsi_list = [ind["RSI"] for ind in handler.get_analysis().indicators_list[-4:]] if hasattr(handler.get_analysis(), 'indicators_list') else []
 
-            # Prüfe Streaks (hier simuliert mit gleichem RSI-Wert)
-            rsi_values = [current_rsi] * CHECK_LENGTH
-
-            if all(r < RSI_THRESHOLD_LOW for r in rsi_values):
-                if state.get(symbol) != "long":
-                    msg = f"📉 {symbol}: RSI < 30 in den letzten {CHECK_LENGTH} 4h-Kerzen. Long Setup denkbar."
-                    send_telegram_message(msg)
-                    print("✅ Telegram gesendet.")
-                    state[symbol] = "long"
-                else:
-                    print("✅ Bereits gemeldet (long)")
-            elif all(r > RSI_THRESHOLD_HIGH for r in rsi_values):
-                if state.get(symbol) != "short":
-                    msg = f"📈 {symbol}: RSI > 70 in den letzten {CHECK_LENGTH} 4h-Kerzen. Short Setup denkbar."
-                    send_telegram_message(msg)
-                    print("✅ Telegram gesendet.")
-                    state[symbol] = "short"
-                else:
-                    print("✅ Bereits gemeldet (short)")
+        if len(rsi_list) >= 4:
+            if is_rsi_streak(rsi_list, oversold=True):
+                msg = f"🚨 RSI-Streak erkannt bei {symbol} (RSI < 30, letzte 4x 4h)"
+                print(msg)
+                send_telegram_message(msg)
+            elif is_rsi_streak(rsi_list, oversold=False):
+                msg = f"🚨 RSI-Streak erkannt bei {symbol} (RSI > 70, letzte 4x 4h)"
+                print(msg)
+                send_telegram_message(msg)
             else:
                 print("ℹ️ Kein RSI-Streak.")
-                state[symbol] = "none"
+        else:
+            print("⏳ Warte auf 4 RSI-Werte...")
 
-        except Exception as e:
-            print(f"❌ Fehler bei {symbol}: {e}")
         time.sleep(1)
 
-    save_state(state)
-    print("\n✅ RSI-Analyse abgeschlossen.")
+    except Exception as e:
+        print(f"❌ Fehler bei {symbol}: {e}")
 
-
-if __name__ == "__main__":
-    analyze_rsi()
+print("✅ RSI-Analyse abgeschlossen.")
