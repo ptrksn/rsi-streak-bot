@@ -1,52 +1,20 @@
-import os
-import time
-import hmac
-import hashlib
 import requests
 
-API_KEY = os.getenv("PHEMEX_API_KEY")
-API_SECRET = os.getenv("PHEMEX_API_SECRET")
-BASE_URL = "https://vapi.phemex.com"
+symbols = ["BTCUSD", "ETHUSD", "XRPUSD", "LINKUSD", "LTCUSD", "ADAUSD", "DOTUSD", "UNIUSD", "AAVEUSD", "BCHUSD"]
+url_template = "https://api.phemex.com/md/kline?symbol={symbol}&resolution=14400&limit=5"
 
-SYMBOLS = ["BTCUSD", "ETHUSD"]
+print("\U0001F4CA Teste Phemex OHLC API (public endpoint)...")
 
-# Signatur erstellen (HMAC SHA256)
-def sign_request(endpoint, expiry):
-    message = endpoint + str(expiry)
-    signature = hmac.new(
-        bytes(API_SECRET, "utf-8"),
-        bytes(message, "utf-8"),
-        digestmod=hashlib.sha256
-    ).hexdigest()
-    return signature
-
-# Authentifizierten Request senden
-def get_ohlc(symbol):
-    endpoint = f"/md/kline?symbol={symbol}&resolution=14400&limit=5"
-    expiry = int(time.time()) + 60
-    signature = sign_request(endpoint, expiry)
-
-    headers = {
-        "x-phemex-access-token": API_KEY,
-        "x-phemex-request-expiry": str(expiry),
-        "x-phemex-request-signature": signature
-    }
-
+for symbol in symbols:
     try:
-        response = requests.get(BASE_URL + endpoint, headers=headers)
+        url = url_template.format(symbol=symbol)
+        response = requests.get(url)
         response.raise_for_status()
         data = response.json()
-        if data.get("error"):
-            print(f"❌ Fehler bei {symbol}: {data['error']['message']}")
-        elif data.get("result") and len(data["result"]["data"]) > 0:
-            print(f"✅ {symbol}: {len(data['result']['data'])} Kerzen erhalten")
+        candles = data.get("data", [])
+        if candles:
+            print(f"✅ {symbol}: {len(candles)} Kerzen geladen.")
         else:
-            print(f"⚠️ Keine Daten für {symbol}")
+            print(f"⚠️ {symbol}: Keine Daten empfangen.")
     except Exception as e:
         print(f"❌ Fehler bei {symbol}: {e}")
-
-
-# Test starten
-print("🔍 Teste Phemex OHLC API über AUTH...")
-for sym in SYMBOLS:
-    get_ohlc(sym)
