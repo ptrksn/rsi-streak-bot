@@ -1,89 +1,139 @@
-import requests
-import time
-import numpy as np
 import os
+import time
+import requests
+import numpy as np
+from tradingview_ta import TA_Handler, Interval
+from datetime import datetime
 
+# === Konfiguration ===
+CMC_API_KEY = os.getenv("CMC_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-PHEMEX_API_URL = "https://api.phemex.com/md/kline"
+RSI_PERIOD = 14
+RSI_STREAK_THRESHOLD = 4  # Anzahl nacheinander über/unter Schwelle
+RSI_OVERBOUGHT = 70
+RSI_OVERSOLD = 30
+MAX_SYMBOLS = 30
 
-# Nur Perpetual-Symbole von Phemex (Beispiel)
-PHEMEX_SYMBOLS = [
-    "BTCUSD", "ETHUSD", "XRPUSD", "LINKUSD", "LTCUSD",
-    "ADAUSD", "DOTUSD", "UNIUSD", "AAVEUSD", "BCHUSD"
-]
-
-# RSI-Berechnung (ohne pandas_ta)
-def compute_rsi(prices, period=14):
-    deltas = np.diff(prices)
-    seed = deltas[:period]
-    up = seed[seed >= 0].sum() / period
-    down = -seed[seed < 0].sum() / period
-    rs = up / down if down != 0 else 0
-    rsi = [100. - 100. / (1. + rs)]
-
-    for delta in deltas[period:]:
-        upval = max(delta, 0)
-        downval = -min(delta, 0)
-        up = (up * (period - 1) + upval) / period
-        down = (down * (period - 1) + downval) / period
-        rs = up / down if down != 0 else 0
-        rsi.append(100. - 100. / (1. + rs))
-
-    return rsi
-
-# Telegram-Nachricht senden
-def send_telegram_message(message):
+# === Helper: Telegram ===
+def send_telegram_message(text):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("⚠️ Telegram-Token oder Chat-ID fehlt.")
+        print("⚠️ Telegram-Konfiguration fehlt.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        requests.post(url, data=data)
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
     except Exception as e:
-        print(f"❌ Fehler beim Senden: {e}")
+        print(f"❌ Telegram-Fehler: {e}")
 
-# OHLC abrufen (je 4h-Kerze)
-def fetch_ohlc(symbol):
+# === Helper: CoinMarketCap Top-30 ===
+def get_top_volume_symbols():
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+    params = {"sort": "volume_24h", "limit": MAX_SYMBOLS}
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
     try:
-        url = f"{PHEMEX_API_URL}?symbol={symbol}&resolution=4h&limit=20"
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        symbols = []
+        for item in data.get("data", []):
+            symbol = item["symbol"]
+            if symbol.endswith("USD") or symbol in ["USDT", "USDC", "FDUSD", "DAI"]:  # Stablecoins filtern
+                continue
+            symbols.append(f"{symbol}USDT")
+        return symbols
+    except Exception as e:
+        print(f"❌ Fehler bei CMC: {e}")
+        return []
+
+# === Helper: Phemex Perp Filter ===
+def get_phemex_symbols():
+    url = "https://api.phemex.com/exchange/public/products"
+    try:
         response = requests.get(url)
         data = response.json()
-        candles = data.get("data")
-        if candles and len(candles) >= 20:
-            close_prices = [float(c[4]) for c in candles]
-            return close_prices
+        return [p["symbol"] for p in data["data"] if p["type"] == "Perpetual"]
     except Exception as e:
-        print(f"❌ {symbol} Fehler bei OHLC: {e}")
-    return None
+        print(f"❌ Fehler bei Phemex-Symbolen: {e}")
+        return []
 
-# Hauptfunktion
+# === RSI aus TradingView abrufen ===
+def get_rsi(symbol):
+    try:
+        handler = TA_Handler(
+            symbol=symbol,
+            screener="crypto",
+            exchange="BINANCE",
+            interval=Interval.INTERVAL_4_HOURS,
+        )
+        analysis = handler.get_analysis()
+        return analysis.indicators["RSI"]
+    except Exception as e:
+        print(f"❌ Fehler bei {symbol}: {e}")
+        return None
+
+# === Hauptfunktion ===
 def main():
-    print("🔍 RSI-Streak-Analyse für Phemex...")
-    summary = "✨ RSI-Streak-Report (Phemex)\n"
+    print("🔍 RSI-Streak-Check via TradingView...")
 
-    for symbol in PHEMEX_SYMBOLS:
-        prices = fetch_ohlc(symbol)
-        if prices:
-            rsi_values = compute_rsi(prices)
-            last_rsi = rsi_values[-1]
-            streak_under = sum(1 for r in rsi_values[-4:] if r < 30)
-            streak_over = sum(1 for r in rsi_values[-4:] if r > 70)
+    cmc_symbols = get_top_volume_symbols()
+    phemex_symbols = get_phemex_symbols()
 
-            summary += f"\n▶ï¸ {symbol} | RSI: {last_rsi:.2f} | Kerzen: {len(prices)}"
-            if streak_under == 4:
-                summary += "\n⬆️ Mögliches LONG-Setup (4x RSI < 30)"
-            elif streak_over == 4:
-                summary += "\n🔽 Mögliches SHORT-Setup (4x RSI > 70)"
+    filtered = [s for s in cmc_symbols if s.replace("USDT", "USD") in phemex_symbols]
+    print(f"📈 Analysiere {len(filtered)} Symbole: {filtered}...")
+
+    streak_summary = []
+    for symbol in filtered:
+        print(f"📊 {symbol}...")
+        rsi_values = []
+
+        # Aktueller RSI + 3 vorherige RSI-Werte abfragen
+        for i in range(RSI_STREAK_THRESHOLD):
+            rsi = get_rsi(symbol)
+            if rsi is not None:
+                rsi_values.append(rsi)
+            time.sleep(1.5)  # leicht verzögern wegen Rate Limit
+
+        if len(rsi_values) < RSI_STREAK_THRESHOLD:
+            print("⏳ Nicht genug RSI-Werte.")
+            continue
+
+        current = rsi_values[0]
+        streak = 0
+        trend = None
+
+        for r in rsi_values:
+            if r < RSI_OVERSOLD:
+                if trend in [None, "down"]:
+                    streak += 1
+                    trend = "down"
+                else:
+                    break
+            elif r > RSI_OVERBOUGHT:
+                if trend in [None, "up"]:
+                    streak += 1
+                    trend = "up"
+                else:
+                    break
             else:
-                summary += f"\n⏳ Noch kein klares Setup (RSI-Streak unter/ober: {streak_under}/{streak_over})"
-        else:
-            summary += f"\n❌ {symbol}: Keine OHLC-Daten."
-        time.sleep(1)
+                break
 
-    print(summary)
-    send_telegram_message(summary)
+        print(f"Aktueller RSI: {current:.2f}")
+        if streak >= RSI_STREAK_THRESHOLD:
+            msg = f"✅ {symbol}: {streak}x RSI {'<' if trend=='down' else '>'} {RSI_OVERSOLD if trend=='down' else RSI_OVERBOUGHT}\n📈 RSI: {current:.2f}"
+            streak_summary.append(msg)
+        else:
+            print("ℹ️ Kein RSI-Streak.")
+
+    # Telegram-Report
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    if streak_summary:
+        final_report = f"📊 RSI-Streak-Report ({now})\n\n" + "\n".join(streak_summary)
+    else:
+        final_report = f"📊 RSI-Streak-Report ({now})\n\n❌ Kein Coin mit aktuellem RSI-Streak."
+
+    print(final_report)
+    send_telegram_message(final_report)
+
 
 if __name__ == "__main__":
     main()
