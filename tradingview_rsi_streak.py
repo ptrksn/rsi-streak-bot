@@ -1,129 +1,106 @@
 import os
-import time
-import numpy as np
 from datetime import datetime
 from tradingview_ta import TA_Handler, Interval, Exchange
+import time
 import requests
 
-CMC_API_KEY = os.getenv("CMC_API_KEY")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# === Telegram-Konfiguration ===
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-
-def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+def send_telegram(message):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("⚠️ Telegram-Konfiguration fehlt.")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
     try:
-        response = requests.post(url, data=data)
-        if response.status_code != 200:
-            print("⚠️ Fehler beim Senden der Telegram-Nachricht:", response.text)
+        requests.post(url, data=payload)
     except Exception as e:
-        print("❌ Telegram-Fehler:", e)
+        print(f"❌ Fehler beim Senden der Telegram-Nachricht: {e}")
 
+# === Coins (Top 30 stabil, Phemex-verfügbar) ===
+SYMBOLS = [
+    "BTCUSDT", "ETHUSDT", "XRPUSDT", "BNBUSDT", "SOLUSDT", "DOGEUSDT", "ADAUSDT", "AVAXUSDT",
+    "LINKUSDT", "UNIUSDT", "LTCUSDT", "TRXUSDT", "DOTUSDT", "SHIBUSDT", "BCHUSDT", "AAVEUSDT",
+    "MATICUSDT", "EOSUSDT", "MASKUSDT", "COMPUSDT", "SANDUSDT", "GRTUSDT", "NEARUSDT",
+    "APTUSDT", "RNDRUSDT", "INJUSDT", "ARBUSDT", "STXUSDT", "LDOUSDT", "CRVUSDT"
+]
 
-def get_top_30_symbols():
-    try:
-        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-        headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-        params = {"start": "1", "limit": "50", "sort": "volume_24h", "convert": "USDT"}
-        response = requests.get(url, headers=headers, params=params)
-        data = response.json()
-        symbols = [entry["symbol"] + "USDT" for entry in data["data"]]
-
-        # Filtere Stablecoins und ungültige Symbole
-        blacklist = ["USDTUSDT", "USDCUSDT", "FDUSDUSDT", "TUSDUSDT", "DAIUSDT", "EURUSDT", "vBNBUSDT", "ETH.zUSDT", "USDT.zUSDT"]
-        filtered = [s for s in symbols if s not in blacklist and "." not in s and len(s) <= 12]
-        return filtered[:30]  # Top 30
-    except Exception as e:
-        print("❌ Fehler beim Abrufen der CMC-Daten:", e)
-        return []
-
-
+# === RSI-Analyse ===
 def get_rsi_values(symbol):
     try:
         handler = TA_Handler(
-            symbol=symbol.replace("USDT", ""),
+            symbol=symbol,
             screener="crypto",
-            exchange="BINANCE",
+            exchange="binance",
             interval=Interval.INTERVAL_4_HOURS
         )
         analysis = handler.get_analysis()
-        rsi_list = analysis.indicators.get("RSI")
-        if isinstance(rsi_list, (int, float)):
-            return float(rsi_list), [float(rsi_list)]
-        return None, []
+        rsi_series = analysis.indicators.get("RSI")
+        if isinstance(rsi_series, list):
+            return rsi_series[-1], rsi_series[-4:]  # Aktuellster RSI, letzte 4
+        elif isinstance(rsi_series, (int, float)):
+            return rsi_series, [rsi_series] * 4
+        else:
+            raise ValueError("Ungueltiges RSI-Format")
     except Exception as e:
-        print(f"❌ {symbol}: Fehler bei RSI", e)
-        return None, []
-
+        return None, f"Fehler bei RSI: {e}"
 
 def check_rsi_streak(rsi_values):
-    last_4 = rsi_values[-4:] if len(rsi_values) >= 4 else []
-    if len(last_4) < 4:
-        return "none"
-
-    below_30 = sum(1 for r in last_4 if r < 30)
-    above_70 = sum(1 for r in last_4 if r > 70)
-
+    if isinstance(rsi_values, str):
+        return rsi_values
+    below_30 = [r < 30 for r in rsi_values].count(True)
+    above_70 = [r > 70 for r in rsi_values].count(True)
     if below_30 == 4:
-        return "streak_long"
+        return "✅ RSI < 30 (4x) – Long Streak"
     elif above_70 == 4:
-        return "streak_short"
-    elif below_30 >= 3:
-        return "potential_long"
-    elif above_70 >= 3:
-        return "potential_short"
+        return "✅ RSI > 70 (4x) – Short Streak"
+    elif below_30 == 3:
+        return "⚠️ RSI unter 30 – Long Setup denkbar"
+    elif above_70 == 3:
+        return "⚠️ RSI über 70 – Short Setup denkbar"
     else:
-        return "none"
+        return "❌ Kein RSI-Streak"
 
-
+# === Hauptfunktion ===
 def main():
     print("🔍 RSI-Streak-Check via TradingView...")
-    symbols = get_top_30_symbols()
-    print(f"📈 Analysiere {len(symbols)} Symbole: {symbols[:5]}...")
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-    streaks = []
-    potentials = []
-    none = []
+    group_streaks = []
+    group_setups = []
+    group_neutral = []
 
-    for symbol in symbols:
+    print(f"📈 Analysiere {len(SYMBOLS)} Symbole: {SYMBOLS[:5]}...")
+
+    for symbol in SYMBOLS:
         print(f"📊 {symbol}...")
         rsi, rsi_values = get_rsi_values(symbol)
-        if rsi is None:
-            none.append(f"❌ {symbol}: Fehler bei RSI")
+
+        if isinstance(rsi_values, str):
+            group_neutral.append(f"❌ {symbol}: {rsi_values}")
             continue
 
         status = check_rsi_streak(rsi_values)
-
-        if status == "streak_long":
-            streaks.append(f"✅ {symbol}: RSI < 30 (4/4) – Long Streak")
-        elif status == "streak_short":
-            streaks.append(f"✅ {symbol}: RSI > 70 (4/4) – Short Streak")
-        elif status == "potential_long":
-            potentials.append(f"⚠️ {symbol}: RSI unter 30 – Long Setup denkbar")
-        elif status == "potential_short":
-            potentials.append(f"⚠️ {symbol}: RSI über 70 – Short Setup denkbar")
+        if "✅" in status:
+            group_streaks.append(f"{symbol}: {status}")
+        elif "⚠️" in status:
+            group_setups.append(f"{symbol}: {status}")
         else:
-            none.append(f"❌ {symbol}: Kein RSI-Streak")
-
+            group_neutral.append(f"❌ {symbol}: Kein RSI-Streak")
         time.sleep(1)
 
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    report = f"📊 RSI-Streak-Report ({now})\n\n"
+    # Telegram-Report
+    report = f"📊 RSI-Streak-Report ({timestamp})\n\n"
+    if group_streaks:
+        report += "🔥 RSI-Streaks erkannt:\n" + "\n".join(group_streaks) + "\n\n"
+    if group_setups:
+        report += "⚠️ Potenzielle Setups (3/4):\n" + "\n".join(group_setups) + "\n\n"
+    report += "❌ Kein RSI-Streak oder Fehler:\n" + "\n".join(group_neutral)
 
-    if streaks:
-        report += "✅ Aktuelle RSI-Streaks (4/4):\n" + "\n".join(streaks) + "\n\n"
-    if potentials:
-        report += "⚠️ Potenzielle Setups (3/4):\n" + "\n".join(potentials) + "\n\n"
-    if none:
-        report += "❌ Kein RSI-Streak oder Fehler:\n" + "\n".join(none)
-
-    print(report)
-    send_telegram_message(report)
-
+    send_telegram(report)
+    print("✅ RSI-Analyse abgeschlossen.")
 
 if __name__ == "__main__":
     main()
