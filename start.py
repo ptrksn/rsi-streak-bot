@@ -1,3 +1,5 @@
+import os
+print(f"📁 Dateien im Ordner: {os.listdir()}")
 import sys
 import subprocess
 
