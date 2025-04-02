@@ -1,4 +1,3 @@
-pandas
-numpy
 requests
 tradingview_ta
+python-dotenv
