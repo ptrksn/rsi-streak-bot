@@ -1,0 +1,22 @@
+import requests
+
+BASE_URL = "https://api.phemex.com"
+SYMBOLS = ["BTCUSD", "ETHUSD"]
+RESOLUTION = 14400  # 4 Stunden
+LIMIT = 5
+
+print("🔍 Teste Phemex OHLC API...")
+
+for symbol in SYMBOLS:
+    url = f"{BASE_URL}/md/kline?symbol={symbol}&resolution={RESOLUTION}&limit={LIMIT}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        if "data" in data and isinstance(data["data"], list):
+            candles = data["data"]
+            print(f"✅ {symbol}: {len(candles)} Kerzen erhalten.")
+        else:
+            print(f"⚠️ {symbol}: Keine Kerzen im Response.")
+    except Exception as e:
+        print(f"❌ Fehler bei {symbol}: {e}")
