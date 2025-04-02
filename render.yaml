@@ -1,8 +1,7 @@
-services:
-  - type: cron
-    name: tradingview-rsi-streak
-    schedule: "0 */4 * * *"  # alle 4 Stunden
-    env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python3 tradingview_rsi_streak.py"
+- type: cron
+  name: phemex-rsi-streak
+  schedule: "0 */4 * * *"  # alle 4 Stunden
+  env: python
+  plan: free
+  buildCommand: "pip install -r requirements.txt"
+  startCommand: "python start.py rsi"
